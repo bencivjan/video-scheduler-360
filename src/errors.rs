@@ -1,3 +1,5 @@
+use std::error::Error;
+
 #[derive(Debug)]
 pub enum ServerError {
     Critical(String),
@@ -15,6 +17,16 @@ impl fmt::Display for ServerError {
             ServerError::HttpParse(ref msg) => write!(f, "Http Parse Error: {}", msg),
             // ServerError::Connection(ref msg) => write!(f, "TCP Connection Error: {}", msg),
             ServerError::CustomError(ref msg) => write!(f, "Custom error: {}", msg),
+        }
+    }
+}
+
+impl Error for ServerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ServerError::Critical(ref msg) => None,
+            ServerError::HttpParse(ref msg) => None,
+            ServerError::CustomError(ref msg) => None,
         }
     }
 }
