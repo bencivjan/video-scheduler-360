@@ -8,6 +8,7 @@ use httparse;
 use std::{
     fs::File, fs::metadata, io::{prelude::*, SeekFrom}, net::TcpListener, net::TcpStream, str, thread, time::Duration,
 };
+use std::time::Instant;
 
 fn main() -> Result<(), ServerError> {
     let listener = TcpListener::bind("127.0.0.1:7878")
@@ -37,7 +38,8 @@ fn main() -> Result<(), ServerError> {
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
-    let file_path = "../v_day_climb_carry.mp4"; // "../movie.mp4";
+    let file_path = "../v_day_climb_carry.mp4";
+    // let file_path = "../bears.mp4";
 
     let mut req_buffer = [0; 1024];
     stream.read(&mut req_buffer).unwrap();
@@ -83,12 +85,21 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Er
 
     stream.write_all(response.as_bytes()).unwrap();
 
+    let mut total_read_time_us = 0;
+    let mut total_write_time_us = 0;
+    let mut num_chunks = 0;
     loop {
+        let mut start_time = Instant::now();
         let bytes_read = file.read(&mut file_buffer).unwrap();
         file_bytes_written += bytes_read;
         if bytes_read == 0 {
             break; // End of file
         }
+        let mut end_time = Instant::now();
+        total_read_time_us += end_time.duration_since(start_time).as_micros();
+        // println!("Read operation of {} bytes took {} us", BLOCK_SIZE, end_time.duration_since(start_time).as_micros());
+
+        start_time = Instant::now();
         match stream.write(&file_buffer[..bytes_read]) {
             Ok(_) => {/* Maybe want to print some useful info later */},
             Err(e) => {
@@ -96,8 +107,16 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Er
                 break;
             }
         }
+        end_time = Instant::now();
+        total_write_time_us += end_time.duration_since(start_time).as_micros();
+        num_chunks += 1;
+        // println!("I/O operation of {} bytes took {} us", BLOCK_SIZE, end_time.duration_since(start_time).as_micros());
     }
     println!("Total bytes written to stream: {}", file_bytes_written);
+    if num_chunks > 0 {
+        println!("Average time for file read operation with {} chunks: {} us", num_chunks, total_read_time_us / num_chunks);
+        println!("Average time for network write operation with {} chunks: {} us", num_chunks, total_write_time_us / num_chunks);
+    }
     stream.flush().unwrap();
 
     Ok(())
