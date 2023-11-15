@@ -1,14 +1,15 @@
 // mod worker;
 mod errors;
+mod scheduler;
 
 use core::num;
 // use worker::ThreadPool;
 use errors::ServerError;
 use httparse;
 use std::{
-    fs::File, fs::metadata, io::{prelude::*, SeekFrom}, net::TcpListener, net::TcpStream, str, thread, time::Duration,
+    fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, str, thread,
+    time::Duration, time::Instant,
 };
-use std::time::Instant;
 
 fn main() -> Result<(), ServerError> {
     let listener = TcpListener::bind("127.0.0.1:7878")
@@ -57,13 +58,17 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Er
 
     let status_line = match req.method {
         Some("GET") => "HTTP/1.1 206 Partial Content",
-        _ => "HTTP/1.1 404 NOT FOUND"
+        _ => "HTTP/1.1 404 NOT FOUND",
     };
 
     // TODO: Handle chunk requests from client
     let mut start = 0;
     let mut end = 0;
-    if let Some(user_agent) = req.headers.iter().find(|h| h.name.to_lowercase() == "range") {
+    if let Some(user_agent) = req
+        .headers
+        .iter()
+        .find(|h| h.name.to_lowercase() == "range")
+    {
         // Parse range request
         let range_str = std::str::from_utf8(user_agent.value).unwrap();
         (start, end) = parse_byte_range_request(range_str, 0, content_length).unwrap();
@@ -97,11 +102,10 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Er
         }
         let mut end_time = Instant::now();
         total_read_time_us += end_time.duration_since(start_time).as_micros();
-        // println!("Read operation of {} bytes took {} us", BLOCK_SIZE, end_time.duration_since(start_time).as_micros());
 
         start_time = Instant::now();
         match stream.write(&file_buffer[..bytes_read]) {
-            Ok(_) => {/* Maybe want to print some useful info later */},
+            Ok(_) => { /* Maybe want to print some useful info later */ }
             Err(e) => {
                 println!("=Error=: {e}");
                 break;
@@ -110,29 +114,45 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Er
         end_time = Instant::now();
         total_write_time_us += end_time.duration_since(start_time).as_micros();
         num_chunks += 1;
-        // println!("I/O operation of {} bytes took {} us", BLOCK_SIZE, end_time.duration_since(start_time).as_micros());
     }
     println!("Total bytes written to stream: {}", file_bytes_written);
     if num_chunks > 0 {
-        println!("Average time for file read operation with {} chunks: {} us", num_chunks, total_read_time_us / num_chunks);
-        println!("Average time for network write operation with {} chunks: {} us", num_chunks, total_write_time_us / num_chunks);
+        println!(
+            "Average time for file read operation with {} chunks: {} us",
+            num_chunks,
+            total_read_time_us / num_chunks
+        );
+        println!(
+            "Average time for network write operation with {} chunks: {} us",
+            num_chunks,
+            total_write_time_us / num_chunks
+        );
     }
     stream.flush().unwrap();
 
     Ok(())
 }
 
-fn parse_byte_range_request(range_str: &str, start_default: u64, end_default: u64) -> Result<(u64, u64), Box<dyn std::error::Error>> {
+fn parse_byte_range_request(
+    range_str: &str,
+    start_default: u64,
+    end_default: u64,
+) -> Result<(u64, u64), Box<dyn std::error::Error>> {
     // Split the string by '-' and collect the parts into a vector of strings
     let parts: Vec<&str> = range_str.split('-').collect();
 
     if parts.len() != 2 {
         // This is brutal, change later
-        return Err(Box::new(ServerError::CustomError("Invalid range format.".to_string())));
+        return Err(Box::new(ServerError::CustomError(
+            "Invalid range format.".to_string(),
+        )));
     }
 
     // Attempt to parse the two parts into integers
-    let start = parts[0].trim_start_matches("bytes=").parse::<u64>().unwrap_or(start_default);
+    let start = parts[0]
+        .trim_start_matches("bytes=")
+        .parse::<u64>()
+        .unwrap_or(start_default);
     let end = parts[1].parse::<u64>().unwrap_or(end_default);
 
     Ok((start, end))
