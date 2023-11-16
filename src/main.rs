@@ -1,11 +1,10 @@
-// mod worker;
 mod errors;
 mod scheduler;
+mod timer;
 
-use core::num;
-// use worker::ThreadPool;
 use errors::ServerError;
 use httparse;
+use scheduler::new_executor_and_spawner;
 use std::{
     fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, str, thread,
     time::Duration, time::Instant,
@@ -14,23 +13,24 @@ use std::{
 fn main() -> Result<(), ServerError> {
     let listener = TcpListener::bind("127.0.0.1:7878")
         .map_err(|_| ServerError::Critical("Failed to set up TCP Listener".to_string()))?;
-    // let pool = ThreadPool::new(4)?;
 
+    // Async stream handling
     for stream in listener.incoming() {
         println!("Connection received!");
-        // Handle connections serially for now
+
+        let (executor, spawner) = new_executor_and_spawner();
+        thread::spawn(move || {
+            executor.run();
+        });
+
         match stream {
             Ok(s) => {
-                handle_connection(s).unwrap();
+                spawner.spawn(handle_connection(s));
             }
             Err(e) => {
                 eprintln!("Failed to create stream for TCP connection: {}", e);
             }
         }
-
-        // pool.execute(|| {
-        //     handle_connection(stream);
-        // });
     }
 
     println!("Shutting down.");
@@ -38,7 +38,7 @@ fn main() -> Result<(), ServerError> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
     let file_path = "../v_day_climb_carry.mp4";
     // let file_path = "../bears.mp4";
 
