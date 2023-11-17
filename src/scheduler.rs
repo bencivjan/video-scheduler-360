@@ -7,9 +7,7 @@ use std::{
     sync::mpsc::{channel, Receiver, Sender},
     sync::{Arc, Mutex},
     task::Context,
-    thread,
     time::Duration,
-    time::Instant,
 };
 // The timer we wrote in the previous section:
 use crate::timer::TimerFuture;
@@ -117,6 +115,7 @@ mod tests {
             // let end = Instant::now();
             // println!("done in {} seconds!", end.duration_since(start).as_secs());
             println!("5");
+            Ok(())
         });
 
         spawner.spawn(async {
@@ -128,12 +127,14 @@ mod tests {
             println!("3: Thread 2 counted to 100 mil");
             gtyield(2).await;
             println!("6");
+            Ok(())
         });
 
         spawner.spawn(async {
             println!("4");
             gtyield(3).await;
             println!("7");
+            Ok(())
         });
 
         // Drop the spawner so that our executor knows it is finished and won't

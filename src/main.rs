@@ -10,22 +10,28 @@ use std::{
     time::Duration, time::Instant,
 };
 
+use crate::scheduler::gtyield;
+
 fn main() -> Result<(), ServerError> {
     let listener = TcpListener::bind("127.0.0.1:7878")
         .map_err(|_| ServerError::Critical("Failed to set up TCP Listener".to_string()))?;
 
     // Async stream handling
+    let (executor, spawner) = new_executor_and_spawner();
+    thread::spawn(move || {
+        executor.run();
+    });
+
+    // Thread id for debugging purposes
+    let mut thread_id = 0;
+
     for stream in listener.incoming() {
         println!("Connection received!");
-
-        let (executor, spawner) = new_executor_and_spawner();
-        thread::spawn(move || {
-            executor.run();
-        });
-
+        thread_id += 1;
         match stream {
             Ok(s) => {
-                spawner.spawn(handle_connection(s));
+                // I feel like the quantum should be passed to the spawner not handle_connection
+                spawner.spawn(handle_connection(s, thread_id, 500));
             }
             Err(e) => {
                 eprintln!("Failed to create stream for TCP connection: {}", e);
@@ -38,7 +44,13 @@ fn main() -> Result<(), ServerError> {
     Ok(())
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_connection(
+    mut stream: TcpStream,
+    thread_id: usize,
+    quantum: u128,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut quantum_start = Instant::now();
+
     let file_path = "../v_day_climb_carry.mp4";
     // let file_path = "../bears.mp4";
 
@@ -114,6 +126,15 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::err
         end_time = Instant::now();
         total_write_time_us += end_time.duration_since(start_time).as_micros();
         num_chunks += 1;
+
+        if Instant::now().duration_since(quantum_start).as_millis() > quantum {
+            // println!(
+            //     "{}",
+            //     Instant::now().duration_since(quantum_start).as_millis()
+            // );
+            gtyield(thread_id).await;
+            quantum_start = Instant::now();
+        }
     }
     println!("Total bytes written to stream: {}", file_bytes_written);
     if num_chunks > 0 {
