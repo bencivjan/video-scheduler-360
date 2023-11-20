@@ -4,9 +4,10 @@ use futures::{
 };
 use std::{
     future::Future,
+    pin::Pin,
     sync::mpsc::{channel, Receiver, Sender},
     sync::{Arc, Mutex},
-    task::Context,
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 // The timer we wrote in the previous section:
@@ -39,6 +40,9 @@ pub struct Task {
 }
 
 pub fn new_executor_and_spawner() -> (Executor, Spawner) {
+    // Create a Vec protected by a Mutex. Do I need to see what's on the queue?
+    let shared_vec: Arc<Mutex<Vec<i32>>> = Arc::new(Mutex::new(Vec::new()));
+
     let (task_sender, ready_queue) = channel();
     (Executor { ready_queue }, Spawner { task_sender })
 }
@@ -93,56 +97,74 @@ impl Executor {
     }
 }
 
-pub async fn gtyield(id: usize) {
-    println!("Yielding thread {}", id);
-    TimerFuture::new(Duration::new(0, 1)).await;
+pub async fn yield_now() {
+    YieldNow(false).await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+struct YieldNow(bool);
 
-    #[test]
-    fn main() {
-        let (executor, spawner) = new_executor_and_spawner();
+impl Future for YieldNow {
+    type Output = ();
 
-        // Spawn a task to print before and after waiting on a timer.
-        spawner.spawn(async {
-            // let start = Instant::now();
-            gtyield(1).await;
-            println!("1");
-            gtyield(1).await;
-            // let end = Instant::now();
-            // println!("done in {} seconds!", end.duration_since(start).as_secs());
-            println!("5");
-            Ok(())
-        });
-
-        spawner.spawn(async {
-            println!("2");
-            let mut a = 0;
-            for _ in 0..100_000_000 {
-                a += 1;
-            }
-            println!("3: Thread 2 counted to 100 mil");
-            gtyield(2).await;
-            println!("6");
-            Ok(())
-        });
-
-        spawner.spawn(async {
-            println!("4");
-            gtyield(3).await;
-            println!("7");
-            Ok(())
-        });
-
-        // Drop the spawner so that our executor knows it is finished and won't
-        // receive more incoming tasks to run.
-        drop(spawner);
-
-        // Run the executor until the task queue is empty.
-        // This will print "howdy!", pause, and then print "done!".
-        executor.run();
+    // The futures executor is implemented as a FIFO queue, so all this future
+    // does is re-schedule the future back to the end of the queue, giving room
+    // for other futures to progress.
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.0 {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn main() {
+//         let (executor, spawner) = new_executor_and_spawner();
+
+//         // Spawn a task to print before and after waiting on a timer.
+//         spawner.spawn(async {
+//             // let start = Instant::now();
+//             gtyield(1).await;
+//             println!("1");
+//             gtyield(1).await;
+//             // let end = Instant::now();
+//             // println!("done in {} seconds!", end.duration_since(start).as_secs());
+//             println!("5");
+//             Ok(())
+//         });
+
+//         spawner.spawn(async {
+//             println!("2");
+//             let mut a = 0;
+//             for _ in 0..100_000_000 {
+//                 a += 1;
+//             }
+//             println!("3: Thread 2 counted to 100 mil");
+//             gtyield(2).await;
+//             println!("6");
+//             Ok(())
+//         });
+
+//         spawner.spawn(async {
+//             println!("4");
+//             gtyield(3).await;
+//             println!("7");
+//             Ok(())
+//         });
+
+//         // Drop the spawner so that our executor knows it is finished and won't
+//         // receive more incoming tasks to run.
+//         drop(spawner);
+
+//         // Run the executor until the task queue is empty.
+//         // This will print "howdy!", pause, and then print "done!".
+//         executor.run();
+//     }
+// }

@@ -4,39 +4,52 @@ mod timer;
 
 use errors::ServerError;
 use httparse;
-use scheduler::new_executor_and_spawner;
+// use scheduler::new_executor_and_spawner;
+use async_std::task::{self, JoinHandle};
 use std::{
-    fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, str, thread,
-    time::Duration, time::Instant,
+    fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, panic::take_hook,
+    str, thread, time::Duration, time::Instant,
 };
 
-use crate::scheduler::gtyield;
+// use crate::scheduler::gtyield;
 
 fn main() -> Result<(), ServerError> {
     let listener = TcpListener::bind("127.0.0.1:7878")
         .map_err(|_| ServerError::Critical("Failed to set up TCP Listener".to_string()))?;
 
     // Async stream handling
-    let (executor, spawner) = new_executor_and_spawner();
-    thread::spawn(move || {
-        executor.run();
-    });
+    // let (executor, spawner) = new_executor_and_spawner();
+    // thread::spawn(move || {
+    //     executor.run();
+    // });
 
     // Thread id for debugging purposes
     let mut thread_id = 0;
 
+    let mut task_handles = vec![];
+
     for stream in listener.incoming() {
         println!("Connection received!");
         thread_id += 1;
-        match stream {
+        let handle_result = match stream {
             Ok(s) => {
                 // I feel like the quantum should be passed to the spawner not handle_connection
-                spawner.spawn(handle_connection(s, thread_id, 500));
+                task::Builder::new()
+                    .name("Thread ".to_string() + &thread_id.to_string())
+                    .spawn(handle_connection(s, 500))
             }
             Err(e) => {
                 eprintln!("Failed to create stream for TCP connection: {}", e);
+                Err(e)
             }
+        };
+        if let Ok(handle) = handle_result {
+            if let Some(tname) = handle.task().name() {
+                println!("Spawning {}", tname);
+            }
+            task_handles.push(handle);
         }
+        // println!("All running tasks {:?}", task_handles.iter().filter(|&x| x.));
     }
 
     println!("Shutting down.");
@@ -44,11 +57,7 @@ fn main() -> Result<(), ServerError> {
     Ok(())
 }
 
-async fn handle_connection(
-    mut stream: TcpStream,
-    thread_id: usize,
-    quantum: u128,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_connection(mut stream: TcpStream, quantum: u128) {
     let mut quantum_start = Instant::now();
 
     let file_path = "../v_day_climb_carry.mp4";
@@ -59,13 +68,13 @@ async fn handle_connection(
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
 
-    req.parse(&req_buffer)?;
+    req.parse(&req_buffer).unwrap();
 
     // Could probably mess with block size to change performance
     const BLOCK_SIZE: usize = 1024 * 400;
     let mut file_buffer = vec![0; BLOCK_SIZE];
-    let mut file = File::open(file_path)?;
-    let content_length = metadata(file_path)?.len();
+    let mut file = File::open(file_path).unwrap();
+    let content_length = metadata(file_path).unwrap().len();
     let mut file_bytes_written = 0;
 
     let status_line = match req.method {
@@ -127,12 +136,13 @@ async fn handle_connection(
         total_write_time_us += end_time.duration_since(start_time).as_micros();
         num_chunks += 1;
 
+        // Since you can't stop/start a function externally afaik, we have to do the thread
+        // yielding from within handle_connection
         if Instant::now().duration_since(quantum_start).as_millis() > quantum {
-            // println!(
-            //     "{}",
-            //     Instant::now().duration_since(quantum_start).as_millis()
-            // );
-            gtyield(thread_id).await;
+            if let Some(name) = task::current().name() {
+                println!("Yielding {}", name);
+            };
+            task::yield_now().await;
             quantum_start = Instant::now();
         }
     }
@@ -150,8 +160,6 @@ async fn handle_connection(
         );
     }
     stream.flush().unwrap();
-
-    Ok(())
 }
 
 fn parse_byte_range_request(
