@@ -2,13 +2,33 @@ mod errors;
 mod scheduler;
 
 use errors::ServerError;
+use futures::future;
 use httparse;
+use scheduler::*;
 use std::{
     env, fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, str, thread,
     time::Duration, time::Instant,
 };
+use std::cell::RefCell;
 
-use scheduler::*;
+// Define a thread-local variable using RefCell
+thread_local! {
+    pub static THREAD_LOCAL_CONNECTION_COUNTER: RefCell<usize> = RefCell::new(0);
+}
+
+fn increment_thread_local_counter() {
+    THREAD_LOCAL_CONNECTION_COUNTER.with(|counter| {
+        *counter.borrow_mut() += 1;
+    });
+}
+
+fn decrement_thread_local_counter() {
+    THREAD_LOCAL_CONNECTION_COUNTER.with(|counter| {
+        if *counter.borrow_mut() > 0 {
+            *counter.borrow_mut() -= 1;
+        }
+    });
+}
 
 fn main() -> Result<(), ServerError> {
     let args: Vec<String> = env::args().collect();
@@ -17,6 +37,7 @@ fn main() -> Result<(), ServerError> {
             "Specify a scheduling algorithm".to_string(),
         ));
     }
+    let scheduling_alg = args[1].as_str();
     println!("{}", args[1]);
 
     let listener = TcpListener::bind("127.0.0.1:7878")
@@ -30,14 +51,26 @@ fn main() -> Result<(), ServerError> {
 
     // Thread id for debugging purposes
     let mut thread_id = 0;
+    const QUANTUM: u128 = 500;
 
     for stream in listener.incoming() {
         println!("Connection received!");
+        
         thread_id += 1;
         match stream {
             Ok(s) => {
                 // I feel like the quantum should be passed to the spawner not handle_connection
-                spawner.spawn(handle_connection(s, thread_id, 500));
+                match scheduling_alg {
+                    "r" | "w" => {
+                        spawner.spawn(handle_connection(s, thread_id, QUANTUM));
+                    }
+                    "v" => {
+
+                    }
+                    _ => {
+                        println!("Unsupported scheduling algorithm");
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("Failed to create stream for TCP connection: {}", e);
@@ -50,8 +83,10 @@ fn main() -> Result<(), ServerError> {
     Ok(())
 }
 
-async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum: u128) {
+async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u128) {
     let mut quantum_start = Instant::now();
+    let mut quantum = quantum_;
+    let mut instructor = false;
 
     let file_path = "../v_day_climb_carry.mp4";
     // let file_path = "../bears.mp4";
@@ -62,9 +97,18 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum: u12
     let mut req = httparse::Request::new(&mut headers);
 
     req.parse(&req_buffer).unwrap();
+    match req.path {
+        Some("/instructor") => {
+            println!("Instructor thread started");
+            quantum = quantum * 4;
+            instructor = true;
+        },
+        Some(_) => {}
+        None => {}
+    };
 
     // Could probably mess with block size to change performance
-    const BLOCK_SIZE: usize = 1024 * 400;
+    const BLOCK_SIZE: usize = 1024 * 1000;
     let mut file_buffer = vec![0; BLOCK_SIZE];
     let mut file = File::open(file_path).unwrap();
     let content_length = metadata(file_path).unwrap().len();
@@ -74,6 +118,10 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum: u12
         Some("GET") => "HTTP/1.1 206 Partial Content",
         _ => "HTTP/1.1 404 NOT FOUND",
     };
+
+    // Increment global TCP connection counter
+    increment_thread_local_counter();
+    println!("Number of active connections: {:?}", THREAD_LOCAL_CONNECTION_COUNTER.with(|counter| {*counter.borrow()}));
 
     // TODO: Handle chunk requests from client
     let mut start = 0;
@@ -107,6 +155,7 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum: u12
     let mut total_read_time_us = 0;
     let mut total_write_time_us = 0;
     let mut num_chunks = 0;
+    let total_start_time = Instant::now();
     loop {
         let mut start_time = Instant::now();
         let bytes_read = file.read(&mut file_buffer).unwrap();
@@ -135,8 +184,11 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum: u12
             quantum_start = Instant::now();
         }
     }
+    decrement_thread_local_counter();
     println!("Total bytes written to stream: {}", file_bytes_written);
     if num_chunks > 0 {
+        println!("Instructor thead: {}", if instructor {"Yes"} else {"No"} );
+        println!("Total stream execution time: {} s", Instant::now().duration_since(total_start_time).as_secs_f64());
         println!(
             "Average time for file read operation with {} chunks: {} us",
             num_chunks,
