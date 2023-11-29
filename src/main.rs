@@ -84,7 +84,6 @@ fn main() -> Result<(), ServerError> {
 }
 
 async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u128) {
-    let mut quantum_start = Instant::now();
     let mut quantum = quantum_;
     let mut instructor = false;
 
@@ -109,11 +108,12 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
 
     // Could probably mess with block size to change performance
     const BLOCK_SIZE: usize = 1024 * 1000;
-    let mut file_buffer = vec![0; BLOCK_SIZE];
     let mut file = File::open(file_path).unwrap();
     let content_length = metadata(file_path).unwrap().len();
-    let mut file_bytes_written = 0;
 
+    println!("Req: {:?}", req);
+    // println!("Req string: {}", String::from_utf8_lossy(&req_buffer));
+    // println!("Req method: {:?}", req.method);
     let status_line = match req.method {
         Some("GET") => "HTTP/1.1 206 Partial Content",
         _ => "HTTP/1.1 404 NOT FOUND",
@@ -152,10 +152,24 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
 
     stream.write_all(response.as_bytes()).unwrap();
 
+    write_chunks_to_stream(BLOCK_SIZE, Some(&mut stream), quantum, thread_id).await;
+
+    decrement_thread_local_counter();
+    stream.flush().unwrap();
+}
+
+async fn write_chunks_to_stream(block_size: usize, mut stream_op: Option<&mut TcpStream>, quantum: u128, thread_id: usize) {
+    let mut file_buffer = vec![0; block_size];
+    let mut file_bytes_written = 0;
     let mut total_read_time_us = 0;
     let mut total_write_time_us = 0;
     let mut num_chunks = 0;
+    let mut quantum_start = Instant::now();
     let total_start_time = Instant::now();
+
+    let file_path = "../v_day_climb_carry.mp4";
+    let mut file: File = File::open(file_path).unwrap();
+
     loop {
         let mut start_time = Instant::now();
         let bytes_read = file.read(&mut file_buffer).unwrap();
@@ -167,13 +181,17 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
         total_read_time_us += end_time.duration_since(start_time).as_micros();
 
         start_time = Instant::now();
-        match stream.write(&file_buffer[..bytes_read]) {
-            Ok(_) => { /* Maybe want to print some useful info later */ }
-            Err(e) => {
-                println!("=Error=: {e}");
-                break;
+
+        if let Some(ref mut stream) = stream_op {
+            match stream.write(&file_buffer[..bytes_read]) {
+                Ok(_) => { /* Maybe want to print some useful info later */ }
+                Err(e) => {
+                    println!("=Error=: {e}");
+                    break;
+                }
             }
-        }
+        };
+        
         end_time = Instant::now();
         total_write_time_us += end_time.duration_since(start_time).as_micros();
         num_chunks += 1;
@@ -184,10 +202,9 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
             quantum_start = Instant::now();
         }
     }
-    decrement_thread_local_counter();
     println!("Total bytes written to stream: {}", file_bytes_written);
     if num_chunks > 0 {
-        println!("Instructor thead: {}", if instructor {"Yes"} else {"No"} );
+        // println!("Instructor thead: {}", if instructor {"Yes"} else {"No"} );
         println!("Total stream execution time: {} s", Instant::now().duration_since(total_start_time).as_secs_f64());
         println!(
             "Average time for file read operation with {} chunks: {} us",
@@ -200,7 +217,6 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
             total_write_time_us / num_chunks
         );
     }
-    stream.flush().unwrap();
 }
 
 fn parse_byte_range_request(
@@ -226,4 +242,23 @@ fn parse_byte_range_request(
     let end = parts[1].parse::<u64>().unwrap_or(end_default);
 
     Ok((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_round_robin() {
+        // Async stream handling
+        let (executor, spawner) = new_executor_and_spawner();
+
+        const BLOCK_SIZE: usize = 1024 * 1000;
+
+        for i in 0..3 {
+            spawner.spawn(write_chunks_to_stream(BLOCK_SIZE, None, 1, i));
+        }
+        drop(spawner);
+        executor.run();
+    }
 }
