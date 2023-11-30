@@ -2,14 +2,13 @@ mod errors;
 mod scheduler;
 
 use errors::ServerError;
-use futures::future;
 use httparse;
 use scheduler::*;
+use std::cell::RefCell;
 use std::{
     env, fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, str, thread,
-    time::Duration, time::Instant,
+    time::Instant,
 };
-use std::cell::RefCell;
 
 // Define a thread-local variable using RefCell
 thread_local! {
@@ -55,7 +54,7 @@ fn main() -> Result<(), ServerError> {
 
     for stream in listener.incoming() {
         println!("Connection received!");
-        
+
         thread_id += 1;
         match stream {
             Ok(s) => {
@@ -64,9 +63,7 @@ fn main() -> Result<(), ServerError> {
                     "r" | "w" => {
                         spawner.spawn(handle_connection(s, thread_id, QUANTUM));
                     }
-                    "v" => {
-
-                    }
+                    "v" => {}
                     _ => {
                         println!("Unsupported scheduling algorithm");
                     }
@@ -83,12 +80,12 @@ fn main() -> Result<(), ServerError> {
     Ok(())
 }
 
+#[allow(unused)]
 async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u128) {
     let mut quantum = quantum_;
     let mut instructor = false;
 
     let file_path = "../v_day_climb_carry.mp4";
-    // let file_path = "../bears.mp4";
 
     let mut req_buffer = [0; 1024];
     stream.read(&mut req_buffer).unwrap();
@@ -101,7 +98,7 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
             println!("Instructor thread started");
             quantum = quantum * 4;
             instructor = true;
-        },
+        }
         Some(_) => {}
         None => {}
     };
@@ -121,7 +118,10 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
 
     // Increment global TCP connection counter
     increment_thread_local_counter();
-    println!("Number of active connections: {:?}", THREAD_LOCAL_CONNECTION_COUNTER.with(|counter| {*counter.borrow()}));
+    println!(
+        "Number of active connections: {:?}",
+        THREAD_LOCAL_CONNECTION_COUNTER.with(|counter| { *counter.borrow() })
+    );
 
     // TODO: Handle chunk requests from client
     let mut start = 0;
@@ -152,22 +152,28 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
 
     stream.write_all(response.as_bytes()).unwrap();
 
-    write_chunks_to_stream(BLOCK_SIZE, Some(&mut stream), quantum, thread_id).await;
+    write_chunks_to_stream(file_path, BLOCK_SIZE, Some(&mut stream), quantum, thread_id).await;
 
     decrement_thread_local_counter();
     stream.flush().unwrap();
 }
 
-async fn write_chunks_to_stream(block_size: usize, mut stream_op: Option<&mut TcpStream>, quantum: u128, thread_id: usize) {
+#[allow(unused)]
+async fn write_chunks_to_stream(
+    file_path: &str,
+    block_size: usize,
+    mut stream_op: Option<&mut TcpStream>,
+    quantum: u128,
+    thread_id: usize,
+) {
     let mut file_buffer = vec![0; block_size];
+    let mut quantum_start = Instant::now();
     let mut file_bytes_written = 0;
     let mut total_read_time_us = 0;
     let mut total_write_time_us = 0;
     let mut num_chunks = 0;
-    let mut quantum_start = Instant::now();
-    let total_start_time = Instant::now();
+    // let total_start_time = Instant::now();
 
-    let file_path = "../v_day_climb_carry.mp4";
     let mut file: File = File::open(file_path).unwrap();
 
     loop {
@@ -191,32 +197,32 @@ async fn write_chunks_to_stream(block_size: usize, mut stream_op: Option<&mut Tc
                 }
             }
         };
-        
+
         end_time = Instant::now();
         total_write_time_us += end_time.duration_since(start_time).as_micros();
         num_chunks += 1;
 
         if Instant::now().duration_since(quantum_start).as_millis() > quantum {
-            println!("Yielding thread {}", thread_id);
+            // println!("Yielding thread {}", thread_id);
             yield_now().await;
             quantum_start = Instant::now();
         }
     }
-    println!("Total bytes written to stream: {}", file_bytes_written);
-    if num_chunks > 0 {
-        // println!("Instructor thead: {}", if instructor {"Yes"} else {"No"} );
-        println!("Total stream execution time: {} s", Instant::now().duration_since(total_start_time).as_secs_f64());
-        println!(
-            "Average time for file read operation with {} chunks: {} us",
-            num_chunks,
-            total_read_time_us / num_chunks
-        );
-        println!(
-            "Average time for network write operation with {} chunks: {} us",
-            num_chunks,
-            total_write_time_us / num_chunks
-        );
-    }
+    // println!("Total bytes written to stream: {}", file_bytes_written);
+    // if num_chunks > 0 {
+    //     // println!("Instructor thead: {}", if instructor {"Yes"} else {"No"} );
+    //     println!("Total stream execution time: {} s", Instant::now().duration_since(total_start_time).as_secs_f64());
+    //     println!(
+    //         "Average time for file read operation with {} chunks: {} us",
+    //         num_chunks,
+    //         total_read_time_us / num_chunks
+    //     );
+    //     println!(
+    //         "Average time for network write operation with {} chunks: {} us",
+    //         num_chunks,
+    //         total_write_time_us / num_chunks
+    //     );
+    // }
 }
 
 fn parse_byte_range_request(
@@ -248,17 +254,91 @@ fn parse_byte_range_request(
 mod tests {
     use super::*;
 
+    const THREAD_COUNT: usize = 5;
+    const QUANTUM: u128 = 4;
+
+    thread_local! {
+        static THREAD_LOCAL_VEC: RefCell<Vec<u128>> = RefCell::new(vec![0; THREAD_COUNT]);
+    }
+
+    async fn write_chunks_to_stream_timer(
+        file_path: &str,
+        block_size: usize,
+        stream_op: Option<&mut TcpStream>,
+        quantum: u128,
+        thread_id: usize,
+    ) {
+        let total_start_time = Instant::now();
+        write_chunks_to_stream(file_path, block_size, stream_op, quantum, thread_id).await;
+        println!(
+            "Thread {} total execution time: {} s",
+            thread_id,
+            Instant::now()
+                .duration_since(total_start_time)
+                .as_secs_f64()
+        );
+        // *execution_time_pointer = Instant::now().duration_since(total_start_time).as_secs_f64();
+        THREAD_LOCAL_VEC.with(|vec_cell| {
+            let mut vec = vec_cell.borrow_mut();
+
+            let time: u128 = Instant::now().duration_since(total_start_time).as_millis();
+            // Write to the elements of the vector
+            vec[thread_id] = time;
+        });
+    }
+
     #[test]
     fn test_round_robin() {
         // Async stream handling
         let (executor, spawner) = new_executor_and_spawner();
 
+        let file_path = "../v_day_climb_carry.mp4";
         const BLOCK_SIZE: usize = 1024 * 1000;
+        // const THREAD_COUNT: usize = 3;
 
-        for i in 0..3 {
-            spawner.spawn(write_chunks_to_stream(BLOCK_SIZE, None, 1, i));
+        for i in 0..THREAD_COUNT {
+            spawner.spawn(write_chunks_to_stream_timer(
+                file_path, BLOCK_SIZE, None, QUANTUM, i,
+            ));
         }
+
         drop(spawner);
         executor.run();
+
+        THREAD_LOCAL_VEC.with(|vec_cell| {
+            let vec = vec_cell.borrow();
+            let mut sum = 0;
+            for time in vec.iter() {
+                sum += time;
+            }
+            // println!("Thread-local vector inside closure: {:?}", *vec);
+            println!(
+                "Average thread execution time: {} ms",
+                sum / THREAD_COUNT as u128
+            );
+        });
     }
+
+    // #[test]
+    // fn test_instructor_observer() {
+    //     // Async stream handling
+    //     let (executor, spawner) = new_executor_and_spawner();
+
+    //     let file_path = "../v_day_climb_carry.mp4";
+    //     const BLOCK_SIZE: usize = 1024 * 1000;
+    //     let observer_quantum = 4;
+    //     let instructor_quantum = observer_quantum * 4;
+
+    //     // Spawn instructors with a quantum of 4x
+    //     for i in 0..1 {
+    //         spawner.spawn(write_chunks_to_stream_timer(file_path, BLOCK_SIZE, None, instructor_quantum, i))
+    //     }
+
+    //     // Spawn observers
+    //     for i in 1..4 {
+    //         spawner.spawn(write_chunks_to_stream_timer(file_path, BLOCK_SIZE, None, 4, i));
+    //     }
+    //     drop(spawner);
+    //     executor.run();
+    // }
 }

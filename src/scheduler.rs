@@ -7,8 +7,7 @@ use std::{
     pin::Pin,
     sync::mpsc::{channel, Receiver, Sender},
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
-    time::Duration,
+    task::{Context, Poll},
 };
 
 /// Task executor that receives tasks off of a channel and runs them.
@@ -110,53 +109,4 @@ impl Future for YieldNow {
             Poll::Ready(())
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // #[test]
-    // fn main() {
-    //     let (executor, spawner) = new_executor_and_spawner();
-
-    //     // Spawn a task to print before and after waiting on a timer.
-    //     spawner.spawn(async {
-    //         // let start = Instant::now();
-    //         gtyield(1).await;
-    //         println!("1");
-    //         gtyield(1).await;
-    //         // let end = Instant::now();
-    //         // println!("done in {} seconds!", end.duration_since(start).as_secs());
-    //         println!("5");
-    //         Ok(())
-    //     });
-
-    //     spawner.spawn(async {
-    //         println!("2");
-    //         let mut a = 0;
-    //         for _ in 0..100_000_000 {
-    //             a += 1;
-    //         }
-    //         println!("3: Thread 2 counted to 100 mil");
-    //         gtyield(2).await;
-    //         println!("6");
-    //         Ok(())
-    //     });
-
-    //     spawner.spawn(async {
-    //         println!("4");
-    //         gtyield(3).await;
-    //         println!("7");
-    //         Ok(())
-    //     });
-
-    //     // Drop the spawner so that our executor knows it is finished and won't
-    //     // receive more incoming tasks to run.
-    //     drop(spawner);
-
-    //     // Run the executor until the task queue is empty.
-    //     // This will print "howdy!", pause, and then print "done!".
-    //     executor.run();
-    // }
 }
