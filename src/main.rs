@@ -15,6 +15,20 @@ thread_local! {
     pub static THREAD_LOCAL_CONNECTION_COUNTER: RefCell<usize> = RefCell::new(0);
 }
 
+struct StreamInfo {
+    stream: Option<TcpStream>,
+    instructor: bool,
+}
+
+impl StreamInfo {
+    fn new() -> StreamInfo {
+        return StreamInfo {
+            stream: None,
+            instructor: false,
+        };
+    }
+}
+
 fn increment_thread_local_counter() {
     THREAD_LOCAL_CONNECTION_COUNTER.with(|counter| {
         *counter.borrow_mut() += 1;
@@ -41,7 +55,7 @@ fn main() -> Result<(), ServerError> {
 
     // Thread id for debugging purposes
     let mut thread_id = 0;
-    const QUANTUM: u128 = 500;
+    const QUANTUM: u128 = 1000;
 
     for stream in listener.incoming() {
         println!("Connection received!");
@@ -74,12 +88,13 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
 
+    let mut stream_info: StreamInfo = StreamInfo::new();
+
     req.parse(&req_buffer).unwrap();
     match req.path {
         Some("/instructor") => {
             println!("Instructor thread started");
-            quantum = quantum * 4;
-            instructor = true;
+            stream_info.instructor = true;
         }
         Some(_) => {}
         None => {}
@@ -90,9 +105,6 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
     let mut file = File::open(file_path).unwrap();
     let content_length = metadata(file_path).unwrap().len();
 
-    println!("Req: {:?}", req);
-    // println!("Req string: {}", String::from_utf8_lossy(&req_buffer));
-    // println!("Req method: {:?}", req.method);
     let status_line = match req.method {
         Some("GET") => "HTTP/1.1 206 Partial Content",
         _ => "HTTP/1.1 404 NOT FOUND",
@@ -132,9 +144,11 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
         content_length
     );
 
+    stream_info.stream = Some(stream.try_clone().unwrap());
+
     stream.write_all(response.as_bytes()).unwrap();
 
-    write_chunks_to_stream(file_path, BLOCK_SIZE, Some(&mut stream), quantum, thread_id).await;
+    write_chunks_to_stream(file_path, BLOCK_SIZE, stream_info, quantum, thread_id).await;
 
     decrement_thread_local_counter();
     stream.flush().unwrap();
@@ -144,7 +158,7 @@ async fn handle_connection(mut stream: TcpStream, thread_id: usize, quantum_: u1
 async fn write_chunks_to_stream(
     file_path: &str,
     block_size: usize,
-    mut stream_op: Option<&mut TcpStream>,
+    mut stream_info: StreamInfo,
     quantum: u128,
     thread_id: usize,
 ) {
@@ -170,7 +184,7 @@ async fn write_chunks_to_stream(
 
         start_time = Instant::now();
 
-        if let Some(ref mut stream) = stream_op {
+        if let Some(ref mut stream) = stream_info.stream {
             match stream.write(&file_buffer[..bytes_read]) {
                 Ok(_) => { /* Maybe want to print some useful info later */ }
                 Err(e) => {
@@ -185,7 +199,7 @@ async fn write_chunks_to_stream(
         num_chunks += 1;
 
         if Instant::now().duration_since(quantum_start).as_millis() > quantum {
-            // println!("Yielding thread {}", thread_id);
+            println!("Yielding thread {}", thread_id);
             yield_now().await;
             quantum_start = Instant::now();
         }
@@ -233,10 +247,11 @@ fn parse_byte_range_request(
 }
 
 #[cfg(test)]
-mod tests {    
+mod tests {
     use super::*;
+    use futures::Stream;
     use rand::Rng;
-    use rand_distr::{Distribution, ChiSquared, Uniform};
+    use rand_distr::{ChiSquared, Distribution, Uniform};
     use std::f64::consts::PI;
 
     const THREAD_COUNT: usize = 200;
@@ -255,12 +270,12 @@ mod tests {
     async fn write_chunks_to_stream_timer(
         file_path: &str,
         block_size: usize,
-        stream_op: Option<&mut TcpStream>,
+        mut stream_info: StreamInfo,
         quantum: u128,
         thread_id: usize,
     ) {
         let total_start_time = Instant::now();
-        write_chunks_to_stream(file_path, block_size, stream_op, quantum, thread_id).await;
+        write_chunks_to_stream(file_path, block_size, stream_info, quantum, thread_id).await;
         println!(
             "Thread {} total execution time: {} s",
             thread_id,
@@ -285,7 +300,11 @@ mod tests {
 
         for i in 0..THREAD_COUNT {
             spawner.spawn(write_chunks_to_stream_timer(
-                FILE_PATH, BLOCK_SIZE, None, QUANTUM, i,
+                FILE_PATH,
+                BLOCK_SIZE,
+                StreamInfo::new(),
+                QUANTUM,
+                i,
             ));
         }
 
@@ -321,7 +340,7 @@ mod tests {
             spawner.spawn(write_chunks_to_stream_timer(
                 FILE_PATH,
                 BLOCK_SIZE,
-                None,
+                StreamInfo::new(),
                 instructor_quantum,
                 i,
             ))
@@ -330,7 +349,11 @@ mod tests {
         // Spawn observers
         for i in num_instructors..THREAD_COUNT {
             spawner.spawn(write_chunks_to_stream_timer(
-                FILE_PATH, BLOCK_SIZE, None, QUANTUM, i,
+                FILE_PATH,
+                BLOCK_SIZE,
+                StreamInfo::new(),
+                QUANTUM,
+                i,
             ));
         }
         drop(spawner);
@@ -367,14 +390,18 @@ mod tests {
         let (executor, spawner) = new_executor_and_spawner();
 
         let mut rng = rand::thread_rng();
-        let uniform = Uniform::new(1.0, 1.0 + 2.0*PI);
+        let uniform = Uniform::new(1.0, 1.0 + 2.0 * PI);
 
         // FoV spawns threads with weights in the range of [1, 1 + 2pi] or [1, 7.28318...]
         for i in 0..THREAD_COUNT {
             // Since distribution is uniform we can directly sample FoV from [1, 1 + 2pi]
             let random_quanta: u128 = (uniform.sample(&mut rng) * QUANTUM as f64).round() as u128;
             spawner.spawn(write_chunks_to_stream_timer(
-                FILE_PATH, BLOCK_SIZE, None, random_quanta, i,
+                FILE_PATH,
+                BLOCK_SIZE,
+                StreamInfo::new(),
+                random_quanta,
+                i,
             ));
         }
 
@@ -405,11 +432,15 @@ mod tests {
         // FoV spawns threads with weights in the range of [1, 1 + 2pi] or [1, 7.28318...]
         for i in 0..THREAD_COUNT {
             // Sample FoV from [0, 2pi] based on chi squared distribution
-            let beta = (1.0 + 2.0*PI) - clamp(chi_squared.sample(&mut rng), 0.0, 2.0*PI);
+            let beta = (1.0 + 2.0 * PI) - clamp(chi_squared.sample(&mut rng), 0.0, 2.0 * PI);
             let random_quanta: u128 = (beta * QUANTUM as f64).round() as u128;
 
             spawner.spawn(write_chunks_to_stream_timer(
-                FILE_PATH, BLOCK_SIZE, None, random_quanta, i,
+                FILE_PATH,
+                BLOCK_SIZE,
+                StreamInfo::new(),
+                random_quanta,
+                i,
             ));
         }
 
