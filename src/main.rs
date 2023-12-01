@@ -2,7 +2,6 @@ mod errors;
 mod scheduler;
 
 use errors::ServerError;
-use httparse;
 use scheduler::*;
 use std::cell::RefCell;
 use std::{
@@ -17,15 +16,17 @@ thread_local! {
 
 struct StreamInfo {
     stream: Option<TcpStream>,
+    alpha: f32,
     instructor: bool,
 }
 
 impl StreamInfo {
     fn new() -> StreamInfo {
-        return StreamInfo {
+        StreamInfo {
             stream: None,
+            alpha: 4.0,
             instructor: false,
-        };
+        }
     }
 }
 
@@ -55,7 +56,7 @@ fn main() -> Result<(), ServerError> {
 
     // Thread id for debugging purposes
     let mut thread_id = 0;
-    const QUANTUM: u128 = 1000;
+    const QUANTUM: u128 = 500;
 
     for stream in listener.incoming() {
         println!("Connection received!");
@@ -159,7 +160,7 @@ async fn write_chunks_to_stream(
     file_path: &str,
     block_size: usize,
     mut stream_info: StreamInfo,
-    quantum: u128,
+    quantum_: u128,
     thread_id: usize,
 ) {
     let mut file_buffer = vec![0; block_size];
@@ -169,6 +170,12 @@ async fn write_chunks_to_stream(
     let mut total_write_time_us = 0;
     let mut num_chunks = 0;
     // let total_start_time = Instant::now();
+
+    let quantum = if stream_info.instructor {
+        (quantum_ as f32 * stream_info.alpha).round() as u128
+    } else {
+        quantum_
+    };
 
     let mut file: File = File::open(file_path).unwrap();
 
@@ -199,7 +206,12 @@ async fn write_chunks_to_stream(
         num_chunks += 1;
 
         if Instant::now().duration_since(quantum_start).as_millis() > quantum {
-            println!("Yielding thread {}", thread_id);
+            let is_instructor = if stream_info.instructor {
+                "instructor "
+            } else {
+                ""
+            };
+            println!("Yielding {}thread {}", is_instructor, thread_id);
             yield_now().await;
             quantum_start = Instant::now();
         }
@@ -249,12 +261,10 @@ fn parse_byte_range_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::Stream;
-    use rand::Rng;
     use rand_distr::{ChiSquared, Distribution, Uniform};
     use std::f64::consts::PI;
 
-    const THREAD_COUNT: usize = 200;
+    const THREAD_COUNT: usize = 10;
     const QUANTUM: u128 = 4;
     const BLOCK_SIZE: usize = 1024 * 1000;
     const FILE_PATH: &str = "../v_day_climb_carry.mp4";
@@ -263,14 +273,14 @@ mod tests {
         static THREAD_LOCAL_VEC: RefCell<Vec<u128>> = RefCell::new(vec![0; THREAD_COUNT]);
     }
 
-    fn clamp(mut val: f64, min_val: f64, max_val: f64) -> f64 {
+    fn clamp(val: f64, min_val: f64, max_val: f64) -> f64 {
         val.max(min_val).min(max_val)
     }
 
     async fn write_chunks_to_stream_timer(
         file_path: &str,
         block_size: usize,
-        mut stream_info: StreamInfo,
+        stream_info: StreamInfo,
         quantum: u128,
         thread_id: usize,
     ) {
@@ -331,17 +341,20 @@ mod tests {
         // Async stream handling
         let (executor, spawner) = new_executor_and_spawner();
 
-        let instructor_quantum = (QUANTUM as f32 * ALPHA).round() as u128;
         let instructor_percentage = 0.5;
 
         let num_instructors: usize = (THREAD_COUNT as f32 * instructor_percentage).floor() as usize;
-        // Spawn instructors with a quantum of 4x
+        // Spawn instructors with a quantum of `ALPHA` * observer quantum
         for i in 0..num_instructors {
             spawner.spawn(write_chunks_to_stream_timer(
                 FILE_PATH,
                 BLOCK_SIZE,
-                StreamInfo::new(),
-                instructor_quantum,
+                StreamInfo {
+                    stream: None,
+                    alpha: ALPHA,
+                    instructor: true,
+                },
+                QUANTUM,
                 i,
             ))
         }
@@ -351,7 +364,11 @@ mod tests {
             spawner.spawn(write_chunks_to_stream_timer(
                 FILE_PATH,
                 BLOCK_SIZE,
-                StreamInfo::new(),
+                StreamInfo {
+                    stream: None,
+                    alpha: ALPHA,
+                    instructor: false,
+                },
                 QUANTUM,
                 i,
             ));
