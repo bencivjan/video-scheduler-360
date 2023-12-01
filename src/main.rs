@@ -6,7 +6,7 @@ use httparse;
 use scheduler::*;
 use std::cell::RefCell;
 use std::{
-    env, fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, str, thread,
+    fs::metadata, fs::File, io::prelude::*, net::TcpListener, net::TcpStream, str, thread,
     time::Instant,
 };
 
@@ -30,15 +30,6 @@ fn decrement_thread_local_counter() {
 }
 
 fn main() -> Result<(), ServerError> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        return Err(ServerError::Critical(
-            "Specify a scheduling algorithm".to_string(),
-        ));
-    }
-    let scheduling_alg = args[1].as_str();
-    println!("{}", args[1]);
-
     let listener = TcpListener::bind("127.0.0.1:7878")
         .map_err(|_| ServerError::Critical("Failed to set up TCP Listener".to_string()))?;
 
@@ -58,16 +49,7 @@ fn main() -> Result<(), ServerError> {
         thread_id += 1;
         match stream {
             Ok(s) => {
-                // I feel like the quantum should be passed to the spawner not handle_connection
-                match scheduling_alg {
-                    "r" | "w" => {
-                        spawner.spawn(handle_connection(s, thread_id, QUANTUM));
-                    }
-                    "v" => {}
-                    _ => {
-                        println!("Unsupported scheduling algorithm");
-                    }
-                }
+                spawner.spawn(handle_connection(s, thread_id, QUANTUM));
             }
             Err(e) => {
                 eprintln!("Failed to create stream for TCP connection: {}", e);
@@ -251,14 +233,23 @@ fn parse_byte_range_request(
 }
 
 #[cfg(test)]
-mod tests {
+mod tests {    
     use super::*;
+    use rand::Rng;
+    use rand_distr::{Distribution, ChiSquared, Uniform};
+    use std::f64::consts::PI;
 
-    const THREAD_COUNT: usize = 5;
+    const THREAD_COUNT: usize = 200;
     const QUANTUM: u128 = 4;
+    const BLOCK_SIZE: usize = 1024 * 1000;
+    const FILE_PATH: &str = "../v_day_climb_carry.mp4";
 
     thread_local! {
         static THREAD_LOCAL_VEC: RefCell<Vec<u128>> = RefCell::new(vec![0; THREAD_COUNT]);
+    }
+
+    fn clamp(mut val: f64, min_val: f64, max_val: f64) -> f64 {
+        val.max(min_val).min(max_val)
     }
 
     async fn write_chunks_to_stream_timer(
@@ -292,13 +283,9 @@ mod tests {
         // Async stream handling
         let (executor, spawner) = new_executor_and_spawner();
 
-        let file_path = "../v_day_climb_carry.mp4";
-        const BLOCK_SIZE: usize = 1024 * 1000;
-        // const THREAD_COUNT: usize = 3;
-
         for i in 0..THREAD_COUNT {
             spawner.spawn(write_chunks_to_stream_timer(
-                file_path, BLOCK_SIZE, None, QUANTUM, i,
+                FILE_PATH, BLOCK_SIZE, None, QUANTUM, i,
             ));
         }
 
@@ -311,7 +298,6 @@ mod tests {
             for time in vec.iter() {
                 sum += time;
             }
-            // println!("Thread-local vector inside closure: {:?}", *vec);
             println!(
                 "Average thread execution time: {} ms",
                 sum / THREAD_COUNT as u128
@@ -319,26 +305,127 @@ mod tests {
         });
     }
 
-    // #[test]
-    // fn test_instructor_observer() {
-    //     // Async stream handling
-    //     let (executor, spawner) = new_executor_and_spawner();
+    #[test]
+    fn test_instructor_observer() {
+        const ALPHA: f32 = 6.0;
 
-    //     let file_path = "../v_day_climb_carry.mp4";
-    //     const BLOCK_SIZE: usize = 1024 * 1000;
-    //     let observer_quantum = 4;
-    //     let instructor_quantum = observer_quantum * 4;
+        // Async stream handling
+        let (executor, spawner) = new_executor_and_spawner();
 
-    //     // Spawn instructors with a quantum of 4x
-    //     for i in 0..1 {
-    //         spawner.spawn(write_chunks_to_stream_timer(file_path, BLOCK_SIZE, None, instructor_quantum, i))
-    //     }
+        let instructor_quantum = (QUANTUM as f32 * ALPHA).round() as u128;
+        let instructor_percentage = 0.5;
 
-    //     // Spawn observers
-    //     for i in 1..4 {
-    //         spawner.spawn(write_chunks_to_stream_timer(file_path, BLOCK_SIZE, None, 4, i));
-    //     }
-    //     drop(spawner);
-    //     executor.run();
-    // }
+        let num_instructors: usize = (THREAD_COUNT as f32 * instructor_percentage).floor() as usize;
+        // Spawn instructors with a quantum of 4x
+        for i in 0..num_instructors {
+            spawner.spawn(write_chunks_to_stream_timer(
+                FILE_PATH,
+                BLOCK_SIZE,
+                None,
+                instructor_quantum,
+                i,
+            ))
+        }
+
+        // Spawn observers
+        for i in num_instructors..THREAD_COUNT {
+            spawner.spawn(write_chunks_to_stream_timer(
+                FILE_PATH, BLOCK_SIZE, None, QUANTUM, i,
+            ));
+        }
+        drop(spawner);
+        executor.run();
+
+        THREAD_LOCAL_VEC.with(|vec_cell| {
+            let vec = vec_cell.borrow();
+            let mut instructor_sum = 0;
+            let mut observer_sum = 0;
+            for i in 0..num_instructors {
+                instructor_sum += vec[i];
+            }
+            for i in num_instructors..THREAD_COUNT {
+                observer_sum += vec[i];
+            }
+
+            println!("Number of instructors: {}", num_instructors);
+            println!(
+                "Average instructor thread execution time: {} ms",
+                instructor_sum / num_instructors as u128
+            );
+
+            println!("Number of observers: {}", THREAD_COUNT - num_instructors);
+            println!(
+                "Average observer thread execution time: {} ms",
+                observer_sum / (THREAD_COUNT - num_instructors) as u128
+            );
+        });
+    }
+
+    #[test]
+    fn test_fov_uniform() {
+        // Async stream handling
+        let (executor, spawner) = new_executor_and_spawner();
+
+        let mut rng = rand::thread_rng();
+        let uniform = Uniform::new(1.0, 1.0 + 2.0*PI);
+
+        // FoV spawns threads with weights in the range of [1, 1 + 2pi] or [1, 7.28318...]
+        for i in 0..THREAD_COUNT {
+            // Since distribution is uniform we can directly sample FoV from [1, 1 + 2pi]
+            let random_quanta: u128 = (uniform.sample(&mut rng) * QUANTUM as f64).round() as u128;
+            spawner.spawn(write_chunks_to_stream_timer(
+                FILE_PATH, BLOCK_SIZE, None, random_quanta, i,
+            ));
+        }
+
+        drop(spawner);
+        executor.run();
+
+        THREAD_LOCAL_VEC.with(|vec_cell| {
+            let vec = vec_cell.borrow();
+            let mut sum = 0;
+            for time in vec.iter() {
+                sum += time;
+            }
+            println!(
+                "Average thread execution time: {} ms",
+                sum / THREAD_COUNT as u128
+            );
+        });
+    }
+
+    #[test]
+    fn test_fov_skew() {
+        // Async stream handling
+        let (executor, spawner) = new_executor_and_spawner();
+
+        let mut rng = rand::thread_rng();
+        let chi_squared = ChiSquared::new(2.0).unwrap();
+
+        // FoV spawns threads with weights in the range of [1, 1 + 2pi] or [1, 7.28318...]
+        for i in 0..THREAD_COUNT {
+            // Sample FoV from [0, 2pi] based on chi squared distribution
+            let beta = (1.0 + 2.0*PI) - clamp(chi_squared.sample(&mut rng), 0.0, 2.0*PI);
+            let random_quanta: u128 = (beta * QUANTUM as f64).round() as u128;
+
+            spawner.spawn(write_chunks_to_stream_timer(
+                FILE_PATH, BLOCK_SIZE, None, random_quanta, i,
+            ));
+        }
+
+        drop(spawner);
+        executor.run();
+
+        THREAD_LOCAL_VEC.with(|vec_cell| {
+            let vec = vec_cell.borrow();
+            let mut sum = 0;
+            for time in vec.iter() {
+                sum += time;
+            }
+            println!(
+                "Average thread execution time: {} ms",
+                sum / THREAD_COUNT as u128
+            );
+        });
+    }
 }
