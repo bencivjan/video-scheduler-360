@@ -211,7 +211,7 @@ async fn write_chunks_to_stream(
             } else {
                 ""
             };
-            println!("Yielding {}thread {}", is_instructor, thread_id);
+            // println!("Yielding {}thread {}", is_instructor, thread_id);
             yield_now().await;
             quantum_start = Instant::now();
         }
@@ -264,7 +264,7 @@ mod tests {
     use rand_distr::{ChiSquared, Distribution, Uniform};
     use std::f64::consts::PI;
 
-    const THREAD_COUNT: usize = 10;
+    const THREAD_COUNT: usize = 100;
     const QUANTUM: u128 = 4;
     const BLOCK_SIZE: usize = 1024 * 1000;
     const FILE_PATH: &str = "../v_day_climb_carry.mp4";
@@ -283,8 +283,9 @@ mod tests {
         stream_info: StreamInfo,
         quantum: u128,
         thread_id: usize,
+        total_start_time: Instant
     ) {
-        let total_start_time = Instant::now();
+        // let total_start_time = Instant::now();
         write_chunks_to_stream(file_path, block_size, stream_info, quantum, thread_id).await;
         println!(
             "Thread {} total execution time: {} s",
@@ -307,7 +308,7 @@ mod tests {
     fn test_round_robin() {
         // Async stream handling
         let (executor, spawner) = new_executor_and_spawner();
-
+        let total_start_time = Instant::now();
         for i in 0..THREAD_COUNT {
             spawner.spawn(write_chunks_to_stream_timer(
                 FILE_PATH,
@@ -315,6 +316,7 @@ mod tests {
                 StreamInfo::new(),
                 QUANTUM,
                 i,
+                total_start_time
             ));
         }
 
@@ -336,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_instructor_observer() {
-        const ALPHA: f32 = 6.0;
+        const ALPHA: f32 = 2.0;
 
         // Async stream handling
         let (executor, spawner) = new_executor_and_spawner();
@@ -344,6 +346,8 @@ mod tests {
         let instructor_percentage = 0.5;
 
         let num_instructors: usize = (THREAD_COUNT as f32 * instructor_percentage).floor() as usize;
+        let total_start_time = Instant::now();
+
         // Spawn instructors with a quantum of `ALPHA` * observer quantum
         for i in 0..num_instructors {
             spawner.spawn(write_chunks_to_stream_timer(
@@ -356,6 +360,7 @@ mod tests {
                 },
                 QUANTUM,
                 i,
+                total_start_time
             ))
         }
 
@@ -371,6 +376,7 @@ mod tests {
                 },
                 QUANTUM,
                 i,
+                total_start_time
             ));
         }
         drop(spawner);
@@ -408,6 +414,7 @@ mod tests {
 
         let mut rng = rand::thread_rng();
         let uniform = Uniform::new(1.0, 1.0 + 2.0 * PI);
+        let total_start_time = Instant::now();
 
         // FoV spawns threads with weights in the range of [1, 1 + 2pi] or [1, 7.28318...]
         for i in 0..THREAD_COUNT {
@@ -419,6 +426,7 @@ mod tests {
                 StreamInfo::new(),
                 random_quanta,
                 i,
+                total_start_time
             ));
         }
 
@@ -445,6 +453,7 @@ mod tests {
 
         let mut rng = rand::thread_rng();
         let chi_squared = ChiSquared::new(2.0).unwrap();
+        let total_start_time = Instant::now();
 
         // FoV spawns threads with weights in the range of [1, 1 + 2pi] or [1, 7.28318...]
         for i in 0..THREAD_COUNT {
@@ -458,6 +467,7 @@ mod tests {
                 StreamInfo::new(),
                 random_quanta,
                 i,
+                total_start_time
             ));
         }
 
