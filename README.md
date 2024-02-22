@@ -19,8 +19,8 @@ that if clients seek to download the video as fast as possible,
 it is beneficial to choose a large base time quantum. The
 field-of-view scheduling policy works best when the video’s
 horizon is of interest to many users. But when seeking to
-reduce the download time of high-priority clients, the in-
-structor/observer policy with a high instructor multiplier is
+reduce the download time of high-priority clients, the instructor/observer
+policy with a high instructor multiplier is
 the best option.
 
 View the full report [here](ben_civjan_cs537_final_report.pdf).
